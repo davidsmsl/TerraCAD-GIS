@@ -834,6 +834,14 @@ pub fn test_connection(s: &Settings) -> TestReport {
             }
         }
     }
+    if s.provider.needs_key() && s.api_key.trim().is_empty() {
+        report.lines.push(format!(
+            "✘ Falta la clave de API de {} (escríbela en Configuración o defina {}).",
+            s.provider.label(),
+            s.provider.key_variable()
+        ));
+        return report;
+    }
     let started = Instant::now();
     let listed = match list_models(s) {
         Ok(names) => {

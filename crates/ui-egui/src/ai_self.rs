@@ -463,7 +463,7 @@ pub fn github_ui(ui: &mut egui::Ui, st: &mut State) -> (bool, bool) {
     });
     ui.horizontal(|ui| {
         ui.label(crate::tl!("Token"));
-        ui.add(egui::TextEdit::singleline(&mut st.gh.token).password(true).hint_text("github_pat_…").desired_width(280.0));
+        ui.add(egui::TextEdit::singleline(&mut st.gh.token).password(true).desired_width(280.0));
     });
     ui.hyperlink_to(
         crate::tl!("Create a token (Contents: Read and write on that repository)"),

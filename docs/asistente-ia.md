@@ -45,3 +45,27 @@ Un complemento es **un archivo** que añade un menú y una barra de herramientas
 - Se guardan en la carpeta de configuración, en `plugins/`.
 
 Formato (versión 1): `id`, `name`, `version`, `author`, `description`, `menu`, `items` (`label` + `procedure`), `toolbar` (ids de procedimientos), `procedures` (los de la biblioteca) y `lisp` (`name` + `code`). Ejemplo: `examples/plugins/topografia-rapida.tcgplugin`.
+
+## Probar la conexión
+
+El botón **Probar conexión** (en la barra del asistente y en Configuración) y el comando **Asistente de IA ▸ Probar conexión** hacen dos pasos: listan los modelos del servicio (comprueban la dirección y la clave) y envían una solicitud mínima al modelo elegido (comprueban que la clave puede usarlo y miden el tiempo). El informe nunca incluye la clave.
+
+## Respuestas largas y memoria
+
+- El límite de respuesta subió a 8192 tokens. Si el servicio corta la respuesta por longitud, la aplicación le pide continuar sola (hasta 3 veces) y une las partes.
+- Cada solicitud lleva los últimos 24 mensajes de la conversación, y la conversación se guarda entre sesiones (`civil-ai-chat.json`, solo legible por el usuario, máximo 60 líneas, sin archivos adjuntos). «Nueva conversación» la borra.
+
+## Que el asistente modifique la aplicación
+
+1. Pide el cambio. El asistente responde con un parche `diff` (git, rutas desde la raíz del proyecto).
+2. Bajo el bloque aparece **Aplicar al código fuente…**: muestra los archivos que toca y si se aplica limpio. Al confirmar, se aplica en la carpeta del código fuente (Asistente de IA ▸ Código fuente) y se guarda como un commit propio («Asistente: …») que solo incluye esos archivos; se deshace con `git revert`.
+3. Aparece un aviso con **Recompilar y reiniciar** (`cargo build --release -p cadcraft`, necesita Rust), **Reiniciar sin recompilar** o dejarlo para después. El aviso se guarda (`assistant-pending.json`) y reaparece en la próxima sesión hasta que se recompile.
+4. Al reiniciar, la aplicación pregunta primero por los dibujos sin guardar; si cancelas, no se reinicia. Después de reiniciar la conversación continúa donde quedó.
+
+Los parches con rutas fuera del proyecto, dentro de `.git` o con `..` se rechazan.
+
+## Conectar GitHub
+
+En Configuración ▸ GitHub escribe el repositorio (`propietario/nombre`), la rama (por defecto `terracad-gis-asistente`) y un token personal con permiso **Contents: Read and write** solo sobre ese repositorio. **Probar GitHub** valida el token y el permiso de escritura; **Guardar avance ahora** hace commit de lo que haya cambiado y lo envía a esa rama sin tocar tus ramas ni tus remotos; la casilla «Guardar en GitHub después de cada cambio» lo hace automáticamente.
+
+El token se pasa a git por variables de entorno (no por la línea de comandos), se oculta de todos los mensajes y solo se guarda en disco si marcas «Recordar las claves» (también puede venir de `TERRACAD_GITHUB_TOKEN` o `GITHUB_TOKEN`).
