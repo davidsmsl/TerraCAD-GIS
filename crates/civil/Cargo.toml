@@ -1,0 +1,25 @@
+[package]
+name = "cadcraft-civil"
+description = "Civil-ING: survey point import (CSV/TXT, XLSX, DXF/DWG), TIN, contours, alignments and the AI assistant client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cadcraft-doc = { workspace = true }
+# Reads DXF and DWG drawings for their points.
+cadcraft-io = { workspace = true }
+# Point files from Windows are often in Windows-1252, not UTF-8.
+encoding_rs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# XLSX is a zip of XML parts; only the zip container needs a crate.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+# HTTPS client for the AI assistant (already in the build through craft-update). Not on the web
+# build, which has no sockets: there the assistant says it is unavailable.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "3"

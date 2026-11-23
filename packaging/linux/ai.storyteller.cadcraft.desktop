@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=TerraCAD-GIS
+GenericName=Computer-Aided Design and Surveying
+GenericName[es]=Diseño asistido y topografía
+Comment=Draft, dimension and plot 2D drawings; civil and survey tools; open DXF and DWG files
+Comment[es]=Dibuje, acote e imprima planos 2D; herramientas civiles y topográficas; abra archivos DXF y DWG
+Exec=terracad-gis %F
+TryExec=terracad-gis
+Icon=ai.storyteller.cadcraft
+Terminal=false
+StartupNotify=true
+StartupWMClass=ai.storyteller.cadcraft
+Categories=Graphics;Engineering;VectorGraphics;
+MimeType=image/vnd.dxf;image/vnd.dwg;application/x-dxf;application/acad;
+Keywords=cad;drafting;dxf;dwg;drawing;engineering;architecture;mechanical;

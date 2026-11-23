@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "id": "topografia-rapida",
+  "name": "Topografía rápida",
+  "version": "1.0",
+  "author": "TerraCAD-GIS",
+  "description": "Ejemplo de complemento: un menú y una barra con dos procedimientos (TIN y curvas de nivel cada metro).",
+  "menu": "Topografía rápida",
+  "items": [
+    { "label": "TIN con arista máxima de 50 m", "procedure": "tin-50" },
+    { "label": "Curvas de nivel cada 1 m", "procedure": "curvas-1m" }
+  ],
+  "toolbar": ["tin-50", "curvas-1m"],
+  "procedures": [
+    {
+      "id": "tin-50",
+      "name": "TIN con arista máxima de 50 m",
+      "description": "Triangula los puntos con cota del dibujo.",
+      "steps": [ { "command": "civil.tin", "params": { "max_edge": 50 } } ],
+      "icon": "TIN",
+      "toolbar": true
+    },
+    {
+      "id": "curvas-1m",
+      "name": "Curvas de nivel cada 1 m",
+      "description": "Dibuja curvas menores y mayores (cada 5) con rótulos.",
+      "steps": [ { "command": "civil.contours", "params": { "interval": 1, "major_every": 5, "labels": true } } ],
+      "icon": "CN",
+      "toolbar": true
+    }
+  ],
+  "lisp": []
+}
