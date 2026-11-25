@@ -420,6 +420,8 @@ pub struct Drawn {
     pub rect: Rect,
     pub clicked: Option<String>,
     pub grip: egui::Response,
+    /// Where the pointer was when a button was pulled sideways instead of clicked: the bar is picked up from it.
+    pub pulled_at: Option<Pos2>,
 }
 
 /// Draw `bar` with its top-left corner at `origin`, laid out along `vertical` or horizontal.
@@ -444,12 +446,18 @@ pub fn draw_bar(ui: &mut egui::Ui, bar: &Bar, origin: Pos2, vertical: bool) -> D
     }
     paint_grip(ui, grip_rect, vertical, grip.hovered() && over_grip || grip.dragged());
     let mut clicked = None;
+    let mut pulled_at = None;
     for (idx, item) in bar.items.iter().enumerate() {
         let min = origin
             + along(GRIP + 2.0 + idx as f32 * (BTN + GAP))
             + if vertical { vec2((THICK - BTN) / 2.0, 0.0) } else { vec2(0.0, (THICK - BTN) / 2.0) };
         let br = Rect::from_min_size(min, vec2(BTN, BTN));
-        let resp = ui.interact(br, Id::unique(("cc_bar_item", bar.id.as_str(), idx)), if item.enabled { Sense::click() } else { Sense::hover() });
+        let resp =
+            ui.interact(br, Id::unique(("cc_bar_item", bar.id.as_str(), idx)), if item.enabled { Sense::click_and_drag() } else { Sense::hover() });
+        // Pressing a button and pulling picks the whole bar up (a plain press and release still clicks it).
+        if resp.drag_started() {
+            pulled_at = resp.interact_pointer_pos().or(Some(br.center()));
+        }
         if resp.hovered() && item.enabled {
             ui.painter().rect_filled(br, 3.0, t.control_hover.gamma_multiply(0.6));
         }
@@ -465,7 +473,7 @@ pub fn draw_bar(ui: &mut egui::Ui, bar: &Bar, origin: Pos2, vertical: bool) -> D
             clicked = Some(item.action.clone());
         }
     }
-    Drawn { rect, clicked, grip }
+    Drawn { rect, clicked, grip, pulled_at }
 }
 
 /// The handle at the start of a bar: a rounded tab with two columns of dots, clearly visible at rest and
@@ -496,8 +504,9 @@ fn grip_events(app: &mut CadApp, bar: &Bar, drawn: &Drawn) {
         app.bars.events.push(Event::Action(action.clone()));
     }
     app.bars.rects.insert(bar.id.clone(), drawn.rect);
-    if drawn.grip.drag_started() {
-        let held = drawn.grip.interact_pointer_pos().unwrap_or(drawn.rect.min) - drawn.rect.min;
+    let picked = if drawn.grip.drag_started() { Some(drawn.grip.interact_pointer_pos().unwrap_or(drawn.rect.min)) } else { drawn.pulled_at };
+    if let Some(at) = picked {
+        let held = at - drawn.rect.min;
         let (along, across) = if app.ui.bars.zone(&bar.id).vertical() { (held.y, held.x) } else { (held.x, held.y) };
         begin_drag(app, &bar.id, &bar.title, bar.length(), vec2(along.clamp(0.0, bar.length()), across.clamp(0.0, THICK)));
     }

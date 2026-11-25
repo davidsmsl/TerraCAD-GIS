@@ -268,3 +268,52 @@ fn the_layer_tools_can_be_docked_like_any_other_bar() {
     let r = w.rect(bars::LAYERS_ID);
     assert!(r.height() > r.width() && r.right() > 1200.0, "vertical on the right edge: {r:?}");
 }
+
+/// The Modeling tab of Tool Sets behaves like the Drafting one: its category headers drag out, show the docking
+/// preview near an edge and dock there.
+#[test]
+fn the_modeling_tab_categories_detach_and_dock_too() {
+    let mut found = None;
+    for y in (60..400).step_by(3) {
+        let mut w = Window::new();
+        w.app.ui.toolset_tab = "Modeling".into();
+        w.frame(Vec::new());
+        w.frame(Vec::new());
+        let from = pos2(90.0, y as f32);
+        w.moved(from);
+        w.button(from, true);
+        w.moved(from + vec2(14.0, 6.0));
+        w.moved(from + vec2(60.0, 10.0));
+        if w.app.bars.drag.as_ref().is_some_and(|d| d.id.starts_with("ts.Modeling.")) {
+            found = Some((w, y));
+            break;
+        }
+    }
+    let (mut w, y) = found.expect("some row of the Modeling tab is a category header");
+    let id = w.app.bars.drag.as_ref().unwrap().id.clone();
+    let to = pos2(1270.0, 420.0);
+    w.moved(to);
+    w.moved(to + vec2(1.0, 0.0));
+    assert!(w.app.bars.drag.is_some(), "the drag stays active while held");
+    w.drop(to);
+    assert_eq!(w.zone(&id), Zone::Right, "category at y={y} dropped on the right edge");
+    w.frame(Vec::new());
+    assert!(w.rect(&id).left() > 1180.0, "{:?}", w.rect(&id));
+}
+
+/// A person can pick a toolbar up by one of its buttons: pressing and pulling moves the bar, while a plain click
+/// still runs the button.
+#[test]
+fn a_toolbar_can_be_picked_up_by_a_button() {
+    let mut w = Window::new();
+    let from = w.rect("main.2").min + vec2(31.0, 17.0);
+    w.moved(from);
+    w.button(from, true);
+    w.moved(from + vec2(12.0, 8.0));
+    let to = pos2(8.0, 400.0);
+    w.moved(to);
+    w.moved(to + vec2(1.0, 0.0));
+    assert!(w.app.bars.drag.is_some(), "pulling a button starts moving its bar");
+    w.drop(to);
+    assert_eq!(w.zone("main.2"), Zone::Left);
+}
