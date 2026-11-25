@@ -1709,3 +1709,12 @@ menu	View	视图
 	Progress saved from the TerraCAD-GIS assistant	来自 TerraCAD-GIS 助手的进度保存
 	Test Connection	测试连接
 	Save Progress to GitHub	将进度保存到 GitHub
+	Layers of the selection	所选对象的图层
+	Other layers	其他图层
+	Search layers (* and ? work)	搜索图层（可用 * 和 ?）
+	Clear the search	清除搜索
+	No layer matches the search.	没有符合搜索的图层。
+	Layer list	图层列表
+	The layer tools are in a toolbar.	图层工具在工具栏中。
+	Return to the Layers palette	返回图层面板
+	Drag out to make the layer tools a toolbar	拖出以将图层工具变为工具栏

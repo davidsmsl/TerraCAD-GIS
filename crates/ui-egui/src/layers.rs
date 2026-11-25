@@ -723,7 +723,7 @@ fn used_layers(d: &cadcraft_doc::Drawing) -> std::collections::HashSet<String> {
 }
 
 /// Layer search: plain text matches anywhere; `*` / `?` are wildcards.
-fn crate_wild(q: &str, name: &str) -> bool {
+pub(crate) fn crate_wild(q: &str, name: &str) -> bool {
     if !q.contains('*') && !q.contains('?') {
         return name.contains(q);
     }

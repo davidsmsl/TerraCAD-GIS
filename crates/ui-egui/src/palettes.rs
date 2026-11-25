@@ -414,25 +414,232 @@ pub fn right_palettes(app: &mut CadApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The layer tools, in the Layers palette's row and in the Layers toolbar.
+pub(crate) const LAYER_TOOLS: [(Icon, &str, &str); 9] = [
+    (Icon::LayerProps, "ui.dialog.layers", "Layer Properties"),
+    (Icon::MakeCurrent, "laymcur", "Make Object's Layer Current"),
+    (Icon::LayerMatch, "laymch", "Match Layer"),
+    (Icon::LayerPrev, "layerp", "Previous Layer"),
+    (Icon::LayerIso, "layiso", "Isolate"),
+    (Icon::LayerOff, "layoff", "Turn Off Layer"),
+    (Icon::LayerFreeze, "layfrz", "Freeze Layer"),
+    (Icon::LayerLock, "laylck", "Lock Layer"),
+    (Icon::Unlock, "layulk", "Unlock Layer"),
+];
+
+/// The layer list as a pop-up for the Layers toolbar: the selection's layers first, a search box, a scrolling list.
+pub(crate) fn layer_picker(app: &mut CadApp, ui: &mut egui::Ui) {
+    let Ok(d) = app.session.doc() else { return };
+    let cur = d.header.str("CLAYER", "0");
+    let sel_layers = selection_layers(ui.ctx(), app, d);
+    let mut layers: Vec<(String, bool, bool, bool, Color)> = d.layers.iter().map(|l| (l.name.clone(), l.on, l.frozen, l.locked, l.color)).collect();
+    layers.sort_by_cached_key(|l| (!sel_layers.iter().any(|s| s.eq_ignore_ascii_case(&l.0)), crate::layers::natural_lower(&l.0)));
+    let mut acts = LayerActs::default();
+    ui.set_min_width(260.0);
+    let filter = filter_box(ui, "layers_bar_filter");
+    let height = (ui.ctx().content_rect().height() * 0.5).clamp(160.0, 460.0);
+    egui::ScrollArea::vertical().id_salt("layers_bar_scroll").max_height(height).show(ui, |ui| {
+        layer_rows(ui, &layers, &cur, &sel_layers, &filter, 4.0, &mut acts);
+    });
+    if let Some(n) = acts.current {
+        let _ = app.run("layer.current", json!({ "name": n }));
+    }
+    if let Some((n, k, v)) = acts.toggle {
+        let _ = app.run("layer.set", json!({ "name": n, k: v }));
+    }
+}
+
+/// What the layer rows asked for this frame.
+#[derive(Default)]
+struct LayerActs {
+    current: Option<String>,
+    toggle: Option<(String, &'static str, bool)>,
+}
+
+/// What the palettes need to know about the selected objects, worked out once per drawing revision and selection
+/// (looking up thousands of objects every frame is what made the palettes slow with a big selection).
+struct SelectionSummary {
+    /// The layers of the selected objects, without repeats.
+    layers: Vec<String>,
+    /// The selected handles by object type, in first-seen order.
+    types: Vec<(&'static str, Vec<cadcraft_engine::doc::Handle>)>,
+}
+
+fn selection_summary(ctx: &egui::Context, app: &CadApp, d: &cadcraft_doc::Drawing) -> std::sync::Arc<SelectionSummary> {
+    use std::hash::{Hash, Hasher};
+    let sel = app.session.selection();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(st) = app.session.state() {
+        (st.uid, st.revision).hash(&mut hasher);
+    }
+    sel.hash(&mut hasher);
+    let key = hasher.finish();
+    let id = egui::Id::unique("selection-summary");
+    if let Some((k, s)) = ctx.data(|c| c.get_temp::<(u64, std::sync::Arc<SelectionSummary>)>(id))
+        && k == key
+    {
+        return s;
+    }
+    // One cheap pass over the (possibly huge) selection, then the case-insensitive repeats among the few
+    // distinct layer names.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut names: Vec<&str> = Vec::new();
+    let mut types: Vec<(&'static str, Vec<cadcraft_engine::doc::Handle>)> = Vec::new();
+    for h in &sel {
+        let Some(e) = d.entity(*h) else { continue };
+        if seen.insert(e.common.layer.as_str()) {
+            names.push(e.common.layer.as_str());
+        }
+        let n = e.kind.type_name();
+        match types.iter_mut().find(|(t, _)| *t == n) {
+            Some((_, hs)) => hs.push(*h),
+            None => types.push((n, vec![*h])),
+        }
+    }
+    let mut layers: Vec<String> = Vec::new();
+    for n in names {
+        if !layers.iter().any(|o| o.eq_ignore_ascii_case(n)) {
+            layers.push(n.to_string());
+        }
+    }
+    let summary = std::sync::Arc::new(SelectionSummary { layers, types });
+    ctx.data_mut(|c| c.insert_temp(id, (key, summary.clone())));
+    summary
+}
+
+/// The layers of the selected objects, without repeats (empty when nothing is selected).
+fn selection_layers(ctx: &egui::Context, app: &CadApp, d: &cadcraft_doc::Drawing) -> Vec<String> {
+    selection_summary(ctx, app, d).layers.clone()
+}
+
+/// A search box that keeps its text between frames; returns it in lower case.
+fn filter_box(ui: &mut egui::Ui, key: &str) -> String {
+    let id = egui::Id::unique(key);
+    let mut text: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        let w = (ui.available_width() - 40.0).max(80.0);
+        ui.add(egui::TextEdit::singleline(&mut text).hint_text(crate::tl!("Search layers (* and ? work)")).desired_width(w));
+        if !text.is_empty() && ui.small_button("✕").on_hover_text(crate::tl!("Clear the search")).clicked() {
+            text.clear();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    text.trim().to_lowercase()
+}
+
+/// The layer rows: the selection's layers first under their own heading, then the rest, both narrowed by `filter`.
+/// Returns each name label's response (for the shortcut menu).
+fn layer_rows(
+    ui: &mut egui::Ui,
+    layers: &[(String, bool, bool, bool, Color)],
+    cur: &str,
+    sel: &[String],
+    filter: &str,
+    indent: f32,
+    acts: &mut LayerActs,
+) -> Vec<(String, egui::Response)> {
+    let t = Tokens::get();
+    let mut out = Vec::new();
+    let shown: Vec<&(String, bool, bool, bool, Color)> =
+        layers.iter().filter(|l| filter.is_empty() || crate::layers::crate_wild(filter, &l.0.to_lowercase())).collect();
+    if shown.is_empty() {
+        ui.label(crate::tl!("No layer matches the search."));
+        return out;
+    }
+    let is_sel = |n: &str| sel.iter().any(|s| s.eq_ignore_ascii_case(n));
+    let any_sel = shown.iter().any(|l| is_sel(&l.0));
+    let mut heading_done = [false, false];
+    // Only the rows in view are built: with hundreds of layers, four widgets per row every frame is what made
+    // the palette slow. Rows out of view just keep their place (all rows are as tall as the last one shown).
+    let height_id = egui::Id::unique("layer_row_height");
+    let row_h: f32 = ui.data(|d| d.get_temp(height_id)).unwrap_or(24.0);
+    let view = ui.clip_rect();
+    for (name, on, frozen, locked, color) in shown {
+        let selected = is_sel(name);
+        if any_sel {
+            let k = usize::from(!selected);
+            if !heading_done[k] {
+                heading_done[k] = true;
+                let text = if selected { crate::tl!("Layers of the selection") } else { crate::tl!("Other layers") };
+                ui.horizontal(|ui| {
+                    ui.add_space(indent.max(8.0));
+                    ui.label(egui::RichText::new(text).small().color(if selected { t.accent } else { t.text_dim }));
+                });
+            }
+        }
+        let top = ui.cursor().top();
+        if top > view.bottom() + row_h || top + row_h < view.top() - row_h {
+            ui.allocate_space(vec2(1.0, row_h));
+            continue;
+        }
+        let fill = if selected { t.accent.gamma_multiply(0.16) } else { egui::Color32::TRANSPARENT };
+        let row = egui::Frame::new().fill(fill).corner_radius(3.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                if icons::button(ui, if *on { Icon::Bulb } else { Icon::BulbOff }, 18.0, "On/Off", false).clicked() {
+                    acts.toggle = Some((name.clone(), "on", !*on));
+                }
+                if icons::button(ui, if *frozen { Icon::Snowflake } else { Icon::Sun }, 18.0, "Freeze/Thaw", false).clicked() {
+                    acts.toggle = Some((name.clone(), "frozen", !*frozen));
+                }
+                if icons::button(ui, if *locked { Icon::Lock } else { Icon::Unlock }, 18.0, "Lock/Unlock", false).clicked() {
+                    acts.toggle = Some((name.clone(), "locked", !*locked));
+                }
+                let (sr, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+                swatch(ui.painter(), sr, *color);
+                let r = ui.selectable_label(name.eq_ignore_ascii_case(cur), name);
+                if r.clicked() {
+                    acts.current = Some(name.clone());
+                }
+                out.push((name.clone(), r));
+            });
+        });
+        ui.data_mut(|d| d.insert_temp(height_id, row.response.rect.height()));
+    }
+    out
+}
+
 pub(crate) fn layers_section(app: &mut CadApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     section_header(ui, "Layers");
-    // Layer tools row.
+    // Layer tools row: a toolbar of its own, which can be dragged out to the top, a side or the bottom.
     let mut cmd = None;
+    let docked = app.ui.bars.zone(crate::bars::LAYERS_ID) != crate::bars::Zone::Palette;
+    if docked {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(crate::tl!("The layer tools are in a toolbar.")).small().color(t.text_dim));
+            if ui.small_button(crate::tl!("Return to the Layers palette")).clicked() {
+                app.ui.bars.place(crate::bars::LAYERS_ID, crate::bars::Zone::Palette, 0.0, [0.0, 0.0]);
+            }
+        });
+    }
     ui.horizontal(|ui| {
-        ui.add_space(8.0);
+        if docked {
+            return;
+        }
+        ui.add_space(4.0);
+        let (grip, _) = ui.allocate_exact_size(vec2(16.0, 26.0), Sense::click_and_drag());
+        let hovered = ui.rect_contains_pointer(grip);
+        crate::bars::paint_grip(ui, grip, false, hovered);
+        let resp = ui
+            .interact(grip, egui::Id::unique("layers_tools_grip"), Sense::click_and_drag())
+            .on_hover_text(crate::tl!("Drag out to make the layer tools a toolbar"));
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+        }
+        if resp.drag_started() {
+            crate::bars::begin_drag(
+                app,
+                crate::bars::LAYERS_ID,
+                crate::i18n::t("Layers"),
+                crate::bars::length_for(LAYER_TOOLS.len() + 1),
+                crate::bars::centered_grab(),
+            );
+        }
         ui.spacing_mut().item_spacing = vec2(3.0, 0.0);
-        for (icon, c, tip) in [
-            (Icon::LayerProps, "ui.dialog.layers", "Layer Properties"),
-            (Icon::MakeCurrent, "laymcur", "Make Object's Layer Current"),
-            (Icon::LayerMatch, "laymch", "Match Layer"),
-            (Icon::LayerPrev, "layerp", "Previous Layer"),
-            (Icon::LayerIso, "layiso", "Isolate"),
-            (Icon::LayerOff, "layoff", "Turn Off Layer"),
-            (Icon::LayerFreeze, "layfrz", "Freeze Layer"),
-            (Icon::LayerLock, "laylck", "Lock Layer"),
-            (Icon::Unlock, "layulk", "Unlock Layer"),
-        ] {
+        for (icon, c, tip) in LAYER_TOOLS {
             if icons::button(ui, icon, 26.0, tip, false).clicked() {
                 cmd = Some(c);
             }
@@ -451,10 +658,11 @@ pub(crate) fn layers_section(app: &mut CadApp, ui: &mut egui::Ui) {
     let cur = d.header.str("CLAYER", "0");
     // By name, as the Layer Properties Manager lists them, not in the order they were made (#2858).
     let mut layers: Vec<(String, bool, bool, bool, Color)> = d.layers.iter().map(|l| (l.name.clone(), l.on, l.frozen, l.locked, l.color)).collect();
-    layers.sort_by_key(|l| crate::layers::natural_lower(&l.0));
+    // The layers of the selected objects come first, so they can be switched off, frozen or locked straight away.
+    let sel_layers = selection_layers(ui.ctx(), app, d);
+    layers.sort_by_cached_key(|l| (!sel_layers.iter().any(|s| s.eq_ignore_ascii_case(&l.0)), crate::layers::natural_lower(&l.0)));
+    let mut acts = LayerActs::default();
     let cur_info = layers.iter().find(|l| l.0.eq_ignore_ascii_case(&cur)).cloned();
-    let mut set_current = None;
-    let mut toggle: Option<(String, &str, bool)> = None;
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         let w = ui.available_width() - 10.0;
@@ -476,24 +684,11 @@ pub(crate) fn layers_section(app: &mut CadApp, ui: &mut egui::Ui) {
         }
         icons::paint(p, Rect::from_center_size(pos2(rect.right() - 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::ChevronDown, false);
         egui::Popup::from_toggle_button_response(&resp).width(w).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            for (name, on, frozen, locked, color) in &layers {
-                ui.horizontal(|ui| {
-                    if icons::button(ui, if *on { Icon::Bulb } else { Icon::BulbOff }, 18.0, "On/Off", false).clicked() {
-                        toggle = Some((name.clone(), "on", !*on));
-                    }
-                    if icons::button(ui, if *frozen { Icon::Snowflake } else { Icon::Sun }, 18.0, "Freeze/Thaw", false).clicked() {
-                        toggle = Some((name.clone(), "frozen", !*frozen));
-                    }
-                    if icons::button(ui, if *locked { Icon::Lock } else { Icon::Unlock }, 18.0, "Lock/Unlock", false).clicked() {
-                        toggle = Some((name.clone(), "locked", !*locked));
-                    }
-                    let (sr, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                    swatch(ui.painter(), sr, *color);
-                    if ui.selectable_label(name.eq_ignore_ascii_case(&cur), name).clicked() {
-                        set_current = Some(name.clone());
-                    }
-                });
-            }
+            let filter = filter_box(ui, "layers_combo_filter");
+            let height = (ui.ctx().content_rect().height() * 0.5).clamp(160.0, 460.0);
+            egui::ScrollArea::vertical().id_salt("layers_combo_scroll").max_height(height).show(ui, |ui| {
+                layer_rows(ui, &layers, &cur, &sel_layers, &filter, 0.0, &mut acts);
+            });
         });
     });
     ui.add_space(4.0);
@@ -527,30 +722,28 @@ pub(crate) fn layers_section(app: &mut CadApp, ui: &mut egui::Ui) {
             app.ui.show_layer_list = !app.ui.show_layer_list;
         }
     });
+    let mut name_responses: Vec<(String, egui::Response)> = Vec::new();
     if app.ui.show_layer_list {
         ui.add_space(2.0);
-        for (name, on, frozen, locked, color) in &layers {
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                if icons::button(ui, if *on { Icon::Bulb } else { Icon::BulbOff }, 18.0, "On/Off", false).clicked() {
-                    toggle = Some((name.clone(), "on", !*on));
-                }
-                if icons::button(ui, if *frozen { Icon::Snowflake } else { Icon::Sun }, 18.0, "Freeze/Thaw", false).clicked() {
-                    toggle = Some((name.clone(), "frozen", !*frozen));
-                }
-                if icons::button(ui, if *locked { Icon::Lock } else { Icon::Unlock }, 18.0, "Lock/Unlock", false).clicked() {
-                    toggle = Some((name.clone(), "locked", !*locked));
-                }
-                let (sr, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                swatch(ui.painter(), sr, *color);
-                let r = ui.selectable_label(name.eq_ignore_ascii_case(&cur), name);
-                if r.clicked() {
-                    set_current = Some(name.clone());
-                }
-                crate::shortcut_menus::attach(app, &r, |app| crate::shortcut_menus::layer_entries(app, name));
-            });
+        let filter = filter_box(ui, "layers_list_filter");
+        // Back to the top whenever the selection (and so the layers shown first) changes.
+        let key = sel_layers.join("\u{1}");
+        let scroll_id = egui::Id::unique("layers_list_selection");
+        let changed = ui.data_mut(|d| d.get_temp::<String>(scroll_id).as_deref() != Some(key.as_str()));
+        ui.data_mut(|d| d.insert_temp(scroll_id, key));
+        let height = (ui.ctx().content_rect().height() * 0.45).clamp(160.0, 480.0);
+        let mut area = egui::ScrollArea::vertical().id_salt("layers_list_scroll").max_height(height).auto_shrink([false, true]);
+        if changed {
+            area = area.vertical_scroll_offset(0.0);
         }
+        area.show(ui, |ui| {
+            name_responses = layer_rows(ui, &layers, &cur, &sel_layers, &filter, 14.0, &mut acts);
+        });
     }
+    for (name, r) in &name_responses {
+        crate::shortcut_menus::attach(app, r, |app| crate::shortcut_menus::layer_entries(app, name));
+    }
+    let (set_current, toggle) = (acts.current, acts.toggle);
     if let Some(n) = set_current {
         let _ = app.run("layer.current", json!({ "name": n }));
     }
@@ -687,20 +880,11 @@ fn properties_header(app: &mut CadApp, ui: &mut egui::Ui) {
     ui.painter().text(half.center(), egui::Align2::CENTER_CENTER, crate::tl!("All"), crate::theme::small(), t.text);
     ui.painter().text(my.center(), egui::Align2::CENTER_CENTER, crate::tl!("My"), crate::theme::small(), t.text_faint);
     ui.interact(my, ui.scope_id().with("prop_my"), Sense::hover()).on_hover_text(crate::tl!("My properties: not available yet"));
-    let sel = app.session.selection();
     let pickadd = app.session.settings.pickadd;
     let Ok(d) = app.session.doc() else { return };
     // Selected handles by type, in first-seen order.
-    let mut types: Vec<(&'static str, Vec<String>)> = Vec::new();
-    for h in &sel {
-        if let Some(e) = d.entity(*h) {
-            let n = e.kind.type_name();
-            match types.iter_mut().find(|(t, _)| *t == n) {
-                Some((_, hs)) => hs.push(h.hex()),
-                None => types.push((n, vec![h.hex()])),
-            }
-        }
-    }
+    let summary = selection_summary(ui.ctx(), app, d);
+    let types = &summary.types;
     let count: usize = types.iter().map(|(_, hs)| hs.len()).sum();
     let header = match (count, types.as_slice()) {
         (0, _) => crate::tl!("No selection").to_string(),
@@ -718,9 +902,10 @@ fn properties_header(app: &mut CadApp, ui: &mut egui::Ui) {
         if count > 0 {
             // Narrow the selection to one object type.
             egui::Popup::from_toggle_button_response(&resp).width(w - 10.0).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
-                for (ty, hs) in &types {
+                for (ty, hs) in types {
                     if ui.button(format!("{} ({})", crate::i18n::t(ty), hs.len())).clicked() {
-                        run = Some(("select", json!({ "handles": hs })));
+                        // The hex strings are only made for the type that was picked, not every frame.
+                        run = Some(("select", json!({ "handles": hs.iter().map(|h| h.hex()).collect::<Vec<_>>() })));
                     }
                 }
             });
@@ -1576,6 +1761,44 @@ mod tests {
             output.textures_delta.clear();
         }
         texts
+    }
+
+    /// The Layers palette puts the layers of the selected objects first and can be narrowed by a search.
+    #[test]
+    fn layers_palette_lists_the_selections_layers_first() {
+        let mut app = CadApp::new(Session::default(), Services::default());
+        for i in 0..40 {
+            app.run("layer.new", json!({ "name": format!("Capa{i:02}") })).unwrap();
+        }
+        app.run("layer.current", json!({ "name": "Capa35" })).unwrap();
+        let line = app.run("line", json!({ "points": [[0, 0], [10, 0]] })).unwrap();
+        app.run("layer.current", json!({ "name": "Capa01" })).unwrap();
+        app.run("select", json!({ "handles": [line["handles"][0].clone()] })).unwrap();
+        app.ui.show_layer_list = true;
+        let texts = painted_texts(&mut app, layers_section);
+        let at = |name: &str| texts.iter().position(|t| t == name);
+        let (sel, other) = (at("Capa35"), at("Capa02"));
+        assert!(sel.is_some() && other.is_some(), "both layers are listed: {texts:?}");
+        assert!(sel < other, "the selected object's layer comes before the others: {texts:?}");
+        assert!(texts.iter().any(|t| t == "Layers of the selection"), "{texts:?}");
+
+        // A search narrows the list to what matches.
+        app.run("select", json!({ "handles": [] })).unwrap();
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("layers_list_filter"), "capa3".to_string()));
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 1200.0))), ..Default::default() };
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            app.logic(&ctx);
+            let mut output = ctx.run_ui(input.clone(), |ui| layers_section(&mut app, ui));
+            texts.clear();
+            output.shapes.iter().for_each(|s| collect_text(&s.shape, &mut texts));
+            output.textures_delta.clear();
+        }
+        assert!(texts.iter().any(|t| t == "Capa31"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "Capa05"), "{texts:?}");
+        // The layers shown first follow the selection: with nothing selected there is no such group.
+        assert!(!texts.iter().any(|t| t == "Layers of the selection"), "{texts:?}");
     }
 
     /// Several dimensions selected: the Properties palette shows all of a dimension's properties,

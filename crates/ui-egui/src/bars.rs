@@ -104,7 +104,7 @@ pub struct Layout {
 pub fn default_zone(id: &str) -> Zone {
     if id.starts_with("main.") {
         Zone::Top
-    } else if id.starts_with("ts.") {
+    } else if id.starts_with("ts.") || id == LAYERS_ID {
         Zone::Palette
     } else {
         Zone::Float
@@ -184,6 +184,9 @@ pub fn centered_grab() -> Vec2 {
     vec2(GRIP / 2.0, THICK / 2.0)
 }
 
+/// The id of the Layers toolbar (the tools of the Layers palette).
+pub const LAYERS_ID: &str = "layers";
+
 /// Titles of the main tool bar's groups, in [`crate::chrome::TOOLBAR`] order.
 pub const MAIN_TITLES: [&str; 8] = ["File", "History", "Plot", "Exchange", "Navigate", "Palettes", "Inquiry", "Help"];
 
@@ -223,6 +226,20 @@ pub fn collect(app: &mut CadApp, mac: bool) -> Vec<Bar> {
             order += 1.0;
         }
     }
+    // The Layers palette's tools, with the layer list as its first button.
+    let mut items = vec![Item {
+        glyph: Glyph::Icon(Icon::ChevronDown),
+        tip: crate::i18n::t("Layer list").to_string(),
+        action: "layers:picker".into(),
+        enabled: true,
+    }];
+    items.extend(crate::palettes::LAYER_TOOLS.iter().map(|(icon, cmd, tip)| Item {
+        glyph: Glyph::Icon(*icon),
+        tip: crate::i18n::t(tip).to_string(),
+        action: format!("cmd:{cmd}"),
+        enabled: true,
+    }));
+    bars.push(Bar { id: LAYERS_ID.to_string(), title: crate::i18n::t("Layers").to_string(), items, closable: false, order: 200.0 });
     let mut order = 1000.0;
     for (id, title, items, closable) in crate::ai_tools::bars(app) {
         bars.push(Bar { id, title, items, closable, order });
@@ -334,23 +351,32 @@ pub fn preview(g: &Geom, zone: Zone, size: Vec2, grab: Vec2, p: Pos2) -> (Rect, 
     }
 }
 
-/// The order that puts a bar dropped at `coord` (x for a horizontal strip, y for a vertical one)
-/// among the bars already in the zone, whose rectangles were `rects` last frame.
-pub fn insertion_order(layout: &Layout, existing: &[&Bar], rects: &HashMap<String, Rect>, vertical: bool, coord: f32) -> f32 {
+/// The order that puts a bar dropped at `p` among the bars already in the zone, whose rectangles were `rects`
+/// last frame. Bars on lines before the pointer's come first, then those on the pointer's line left of it
+/// (or above it, in a vertical strip), so it also works for a strip of several lines.
+pub fn insertion_order(layout: &Layout, existing: &[&Bar], rects: &HashMap<String, Rect>, vertical: bool, p: Pos2) -> f32 {
     let key = |b: &Bar| layout.slots.get(&b.id).map_or(b.order, |s| s.order);
     let mut prev: Option<f32> = None;
     for b in existing {
         let Some(r) = rects.get(&b.id) else { continue };
-        let center = if vertical { r.center().y } else { r.center().x };
-        if coord < center {
+        let (across, along, across_lo, across_hi, center) =
+            if vertical { (p.x, p.y, r.left(), r.right(), r.center().y) } else { (p.y, p.x, r.top(), r.bottom(), r.center().x) };
+        let after_pointer = if across < across_lo {
+            true
+        } else if across > across_hi {
+            false
+        } else {
+            along < center
+        };
+        if after_pointer {
             return match prev {
-                Some(p) => (p + key(b)) / 2.0,
+                Some(q) => (q + key(b)) / 2.0,
                 None => key(b) - 1.0,
             };
         }
         prev = Some(key(b));
     }
-    prev.map_or(0.0, |p| p + 1.0)
+    prev.map_or(0.0, |q| q + 1.0)
 }
 
 /// A bar being dragged.
@@ -380,6 +406,8 @@ pub struct Runtime {
     /// Where each drawn bar was last frame.
     pub rects: HashMap<String, Rect>,
     events: Vec<Event>,
+    /// Where the Layers toolbar's list is open (its corner, and which corner of the list sits there).
+    pub layer_picker: Option<(Pos2, egui::Align2)>,
 }
 
 /// Start dragging bar `id` (called when its grip, or a Tool Sets category header, starts a drag).
@@ -482,7 +510,8 @@ fn grip_events(app: &mut CadApp, bar: &Bar, drawn: &Drawn) {
                 ui.close();
             }
         }
-        if bar.id.starts_with("ts.") && ui.button(crate::i18n::t(Zone::Palette.label())).clicked() {
+        let back = if bar.id == LAYERS_ID { crate::tl!("Return to the Layers palette") } else { crate::i18n::t(Zone::Palette.label()) };
+        if (bar.id.starts_with("ts.") || bar.id == LAYERS_ID) && ui.button(back).clicked() {
             app.bars.events.push(Event::MoveTo(bar.id.clone(), Zone::Palette));
             ui.close();
         }
@@ -498,67 +527,34 @@ fn grip_events(app: &mut CadApp, bar: &Bar, drawn: &Drawn) {
     });
 }
 
-/// Draw the bars docked on the top row above the text menus, inside the title/tool bar panel's
-/// `row`, starting at `x`. Bars that do not fit go to a "more" menu, as the single row used to.
-pub fn top_row(app: &mut CadApp, ui: &mut egui::Ui, bars: &[Bar], row: Rect, mut x: f32) {
-    let t = Tokens::get();
+/// The lines the bars docked on top are drawn in: as many as the window's width needs, so none is ever hidden
+/// behind a "more" button (a hidden bar cannot be picked up and moved).
+pub fn top_lines(app: &CadApp, bars: &[Bar], x0: f32) -> Vec<Vec<usize>> {
     let list = in_zone(bars, &app.ui.bars, Zone::Top);
-    let widths: Vec<f32> = list.iter().map(|b| b.length()).collect();
-    let available = (row.right() - 12.0 - x).max(0.0);
-    let y = row.center().y - THICK / 2.0;
-    let Some(fit) = craft_ui::layout::fit_toolbar(&widths, available, BAR_GAP, 30.0) else {
-        // Very small windows still expose every command by scrolling.
-        ui.scope_builder(egui::UiBuilder::new().max_rect(row.shrink2(vec2(4.0, 0.0))), |ui| {
-            egui::ScrollArea::horizontal().id_salt("toolbar_small").show(ui, |ui| {
-                let mut at = ui.cursor().min;
-                for bar in &list {
-                    let (rect, _) = ui.allocate_exact_size(bar.size(false), Sense::hover());
-                    at.x = rect.left();
-                    at.y = rect.top();
-                    let drawn = draw_bar(ui, bar, at, false);
-                    grip_events(app, bar, &drawn);
-                    ui.add_space(BAR_GAP);
-                }
-            });
-        });
-        return;
-    };
-    for (index, _) in &fit.shown {
-        let Some(bar) = list.get(*index) else { continue };
-        let drawn = draw_bar(ui, bar, pos2(x, y), false);
-        grip_events(app, bar, &drawn);
-        x += bar.length() + BAR_GAP;
-    }
-    if !fit.overflow.is_empty() {
-        let br = Rect::from_min_size(pos2(x, row.center().y - BTN / 2.0), vec2(fit.overflow_width, BTN));
-        let response = ui.interact(br, ui.scope_id().with("toolbar_more"), Sense::click());
-        if response.hovered() {
-            ui.painter().rect_filled(br, 3.0, t.control_hover.gamma_multiply(0.6));
-        }
-        for offset in [-5.0, 0.0, 5.0] {
-            ui.painter().circle_filled(br.center() + vec2(offset, 0.0), 1.5, t.text);
-        }
-        icons::describe_control(ui, &response, "More toolbar commands", None, false);
-        let mut clicked = None;
-        egui::Popup::menu(&response).show(|ui| {
-            for (position, index) in fit.overflow.iter().enumerate() {
-                let Some(bar) = list.get(*index) else { continue };
-                if position > 0 {
-                    ui.separator();
-                }
-                for item in &bar.items {
-                    let response = ui.add_enabled(item.enabled, egui::Button::new(item.tip.split(" (").next().unwrap_or(&item.tip)));
-                    crate::control::record_widget(ui, &response, &item.tip, "button", None);
-                    if response.clicked() {
-                        clicked = Some(item.action.clone());
-                        ui.close();
-                    }
-                }
-            }
-        });
-        response.on_hover_text(crate::tl!("More toolbar commands"));
-        if let Some(action) = clicked {
-            app.bars.events.push(Event::Action(action));
+    let lengths: Vec<f32> = list.iter().map(|b| b.length()).collect();
+    let width = app.bars.geom.window.width();
+    let avail = if width > 0.0 { (width - x0 - 12.0).max(120.0) } else { 1200.0 };
+    wrap(&lengths, avail)
+}
+
+/// The height of `lines` lines of bars.
+pub fn lines_height(lines: usize) -> f32 {
+    let n = lines.max(1) as f32;
+    n * THICK + (n - 1.0) * 2.0
+}
+
+/// Draw the bars docked on top, line by line, inside the title/tool bar panel's `row` (the first line),
+/// starting at `x` (later lines start at the panel's left edge).
+pub fn top_row(app: &mut CadApp, ui: &mut egui::Ui, bars: &[Bar], row: Rect, x: f32, lines: &[Vec<usize>]) {
+    let list = in_zone(bars, &app.ui.bars, Zone::Top);
+    for (n, line) in lines.iter().enumerate() {
+        let mut x = if n == 0 { x } else { row.left() + 12.0 };
+        let y = row.top() + n as f32 * (THICK + 2.0);
+        for &i in line {
+            let Some(bar) = list.get(i) else { continue };
+            let drawn = draw_bar(ui, bar, pos2(x, y), false);
+            grip_events(app, bar, &drawn);
+            x += bar.length() + BAR_GAP;
         }
     }
 }
@@ -676,7 +672,7 @@ pub fn place(app: &mut CadApp, bars: &[Bar], id: &str, zone: Zone, at: Option<(P
     let existing: Vec<&Bar> = in_zone(bars, &layout, zone).into_iter().filter(|b| b.id != id).collect();
     let last = existing.last().map_or(0.0, |b| layout.slots.get(&b.id).map_or(b.order, |s| s.order) + 1.0);
     let order = match at {
-        Some((p, _)) => insertion_order(&layout, &existing, &app.bars.rects, zone.vertical(), if zone.vertical() { p.y } else { p.x }),
+        Some((p, _)) => insertion_order(&layout, &existing, &app.bars.rects, zone.vertical(), p),
         None => last,
     };
     let size = bars.iter().find(|b| b.id == id).map_or(vec2(120.0, THICK), |b| b.size(false));
@@ -698,6 +694,7 @@ pub fn finish(app: &mut CadApp, ctx: &egui::Context, bars: &[Bar]) {
             Event::ResetAll => app.ui.bars.reset(),
         }
     }
+    layer_picker_area(app, ctx);
     let Some(drag) = app.bars.drag.clone() else { return };
     let pointer = ctx.input(|i| i.pointer.latest_pos());
     let (down, escape) = ctx.input(|i| (i.pointer.primary_down(), i.key_pressed(egui::Key::Escape)));
@@ -721,6 +718,22 @@ pub fn finish(app: &mut CadApp, ctx: &egui::Context, bars: &[Bar]) {
     }
     app.bars.drag = None;
     place(app, bars, &drag.id, zone, Some((p, drag.grab)));
+}
+
+/// The Layers toolbar's list, open under (or beside) the toolbar until a click lands outside it or Escape.
+fn layer_picker_area(app: &mut CadApp, ctx: &egui::Context) {
+    let Some((pos, pivot)) = app.bars.layer_picker else { return };
+    let t = Tokens::get();
+    let shown = egui::Area::new(Id::unique("cc_layer_picker")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
+        egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.border)).corner_radius(4.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+            crate::palettes::layer_picker(app, ui);
+        });
+    });
+    let (pressed_at, escape) = ctx.input(|i| (i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten(), i.key_pressed(egui::Key::Escape)));
+    let outside = pressed_at.is_some_and(|p| !shown.response.rect.contains(p) && !app.bars.rects.get(LAYERS_ID).is_some_and(|r| r.contains(p)));
+    if outside || escape {
+        app.bars.layer_picker = None;
+    }
 }
 
 fn paint_preview(ctx: &egui::Context, zone: Zone, strip: Rect, bar: Rect, drag: &Drag, t: &Tokens) {
@@ -752,6 +765,17 @@ fn zone_name(zone: Zone) -> &'static str {
 pub fn dispatch(app: &mut CadApp, action: &str) {
     if let Some(command) = action.strip_prefix("cmd:") {
         app.start(command);
+    } else if action == "layers:picker" {
+        let zone = app.ui.bars.zone(LAYERS_ID);
+        app.bars.layer_picker = match (app.bars.layer_picker, app.bars.rects.get(LAYERS_ID)) {
+            (Some(_), _) | (None, None) => None,
+            (None, Some(r)) => Some(match zone {
+                Zone::Left => (r.right_top(), egui::Align2::LEFT_TOP),
+                Zone::Right => (r.left_top(), egui::Align2::RIGHT_TOP),
+                Zone::Bottom => (r.left_top(), egui::Align2::LEFT_BOTTOM),
+                _ => (r.left_bottom(), egui::Align2::LEFT_TOP),
+            }),
+        };
     } else if let Some(command) = action.strip_prefix("tool:") {
         app.cmd.buffer.clear();
         app.start(command);
@@ -835,11 +859,11 @@ mod tests {
             .map(|(id, x)| (id.to_string(), Rect::from_min_size(pos2(x, 0.0), vec2(80.0, 34.0))))
             .collect();
         let all: Vec<&Bar> = bars.iter().collect();
-        assert_eq!(insertion_order(&layout, &all, &rects, false, 10.0), -1.0, "before the first");
-        assert_eq!(insertion_order(&layout, &all, &rects, false, 120.0), 0.5, "left of b's middle: between a (0) and b (1)");
-        assert_eq!(insertion_order(&layout, &all, &rects, false, 160.0), 1.5, "between b (1) and c (2)");
-        assert_eq!(insertion_order(&layout, &all, &rects, false, 900.0), 3.0, "after the last");
-        assert_eq!(insertion_order(&layout, &[], &rects, false, 5.0), 0.0, "into an empty strip");
+        assert_eq!(insertion_order(&layout, &all, &rects, false, pos2(10.0, 10.0)), -1.0, "before the first");
+        assert_eq!(insertion_order(&layout, &all, &rects, false, pos2(120.0, 10.0)), 0.5, "left of b's middle: between a (0) and b (1)");
+        assert_eq!(insertion_order(&layout, &all, &rects, false, pos2(160.0, 10.0)), 1.5, "between b (1) and c (2)");
+        assert_eq!(insertion_order(&layout, &all, &rects, false, pos2(900.0, 10.0)), 3.0, "after the last");
+        assert_eq!(insertion_order(&layout, &[], &rects, false, pos2(5.0, 10.0)), 0.0, "into an empty strip");
     }
 
     #[test]

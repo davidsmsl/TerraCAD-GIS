@@ -217,3 +217,54 @@ fn dragging_a_tool_sets_header_out_of_the_palette_detaches_it() {
     w.frame(Vec::new());
     assert!(w.rect(&id).left() > 1180.0, "{:?}", w.rect(&id));
 }
+
+/// Bars that do not fit on the top row wrap to more lines: none is hidden behind a "more" button, so every one
+/// can still be picked up by its grip.
+#[test]
+fn a_full_top_row_wraps_instead_of_hiding_bars() {
+    let mut w = Window::new();
+    let before = w.app.bars.geom.top.height();
+    let ids: Vec<String> = w.app.bars.rects.keys().filter(|k| k.starts_with("main.") || k.starts_with("ts.")).cloned().collect();
+    assert!(!ids.is_empty());
+    for (n, id) in ["ts.Drafting.Draw", "ts.Drafting.Hatch", "ts.Drafting.Block", "ts.Drafting.Modify", "ts.Drafting.Text", "ts.Drafting.Dimension"]
+        .into_iter()
+        .enumerate()
+    {
+        w.app.ui.bars.place(id, Zone::Top, 50.0 + n as f32, [0.0, 0.0]);
+    }
+    w.frame(Vec::new());
+    w.frame(Vec::new());
+    let g = w.app.bars.geom;
+    assert!(g.top.height() > before, "the top panel grew a line: {} then {}", before, g.top.height());
+    for id in ["main.0", "main.7", "ts.Drafting.Draw", "ts.Drafting.Dimension"] {
+        let r = w.rect(id);
+        // The panel is a pixel shorter than its lines (its separator takes one).
+        assert!(g.top.expand(1.0).contains_rect(r), "{id} {r:?} is inside the top panel {:?}", g.top);
+        assert!(g.window.contains_rect(r), "{id} is inside the window");
+    }
+    // One drawn in a later line can be taken out by its grip.
+    let last = w.rect("ts.Drafting.Dimension");
+    assert!(last.top() > w.rect("main.0").top(), "it is on a line of its own below: {last:?}");
+    let (_, showing) = w.drag("ts.Drafting.Dimension", pos2(1275.0, 400.0));
+    assert!(showing, "the drag started from the later line");
+    w.drop(pos2(1275.0, 400.0));
+    assert_eq!(w.zone("ts.Drafting.Dimension"), Zone::Right);
+}
+
+/// The Layers tools are a toolbar too: they start in the Layers palette and can be dragged to the top or a side.
+#[test]
+fn the_layer_tools_can_be_docked_like_any_other_bar() {
+    let mut w = Window::new();
+    assert_eq!(w.zone(bars::LAYERS_ID), Zone::Palette);
+    w.app.ui.bars.place(bars::LAYERS_ID, Zone::Top, 99.0, [0.0, 0.0]);
+    w.frame(Vec::new());
+    w.frame(Vec::new());
+    let r = w.rect(bars::LAYERS_ID);
+    assert!(w.app.bars.geom.top.expand(1.0).contains_rect(r), "the layer tools sit on the top row: {r:?}");
+    assert!(r.width() > r.height(), "horizontal there");
+    w.app.ui.bars.place(bars::LAYERS_ID, Zone::Right, 0.0, [0.0, 0.0]);
+    w.frame(Vec::new());
+    w.frame(Vec::new());
+    let r = w.rect(bars::LAYERS_ID);
+    assert!(r.height() > r.width() && r.right() > 1200.0, "vertical on the right edge: {r:?}");
+}

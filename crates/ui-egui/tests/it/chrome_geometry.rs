@@ -136,10 +136,9 @@ fn layout_tabs_and_add_button_work_with_toolsets_shown_or_hidden() {
 }
 
 #[test]
-fn compact_toolbar_overflow_keeps_help_reachable() {
+fn compact_toolbar_wraps_and_keeps_help_reachable() {
+    // A narrow window wraps the bars onto more lines instead of hiding them behind a "more" button.
     let mut h = harness(900.0, 560.0, 1.0, false);
-    h.get_by_label("More toolbar commands").click();
-    h.run_steps(3);
     h.get_by_label("Help").click();
     h.run_steps(3);
     assert_eq!(h.state().ui.dialog.as_deref(), Some("about"));

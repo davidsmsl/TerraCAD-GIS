@@ -65,7 +65,9 @@ fn title_left(left: f32, width: f32, text_w: f32) -> f32 {
 pub fn title_and_toolbar(app: &mut CadApp, ui: &mut egui::Ui, bars: &[crate::bars::Bar]) {
     let t = Tokens::get();
     let title_h = if app.integrated_titlebar { MAC_TITLE_BAR } else { 0.0 };
-    let tb_h = if app.ui.show_toolbar { 34.0 } else { 0.0 };
+    let x0 = if app.integrated_titlebar { 120.0 } else { 12.0 };
+    let lines = crate::bars::top_lines(app, bars, x0);
+    let tb_h = if app.ui.show_toolbar { crate::bars::lines_height(lines.len()) } else { 0.0 };
     egui::Panel::top("cc_title_toolbar").exact_size(title_h + tb_h).frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
         let r = ui.max_rect();
         app.bars.geom.top = r;
@@ -85,8 +87,7 @@ pub fn title_and_toolbar(app: &mut CadApp, ui: &mut egui::Ui, bars: &[crate::bar
         }
         if tb_h > 0.0 {
             let row = Rect::from_min_size(pos2(r.left(), r.top() + title_h), vec2(r.width(), tb_h));
-            let x = r.left() + if app.integrated_titlebar { 120.0 } else { 12.0 };
-            crate::bars::top_row(app, ui, bars, row, x);
+            crate::bars::top_row(app, ui, bars, row, r.left() + x0, &lines);
         }
     });
 }
